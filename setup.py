@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='eknowledge',
-    version='0.1.3',
+    version='0.1.4',
     author='Eugene Evstafev',
     author_email='chigwel@gmail.com',
     description='A Python package for executing graph generation from textual inputs.',

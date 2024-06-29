@@ -74,6 +74,26 @@ print(graph)
 #]
 ```
 
+## Input Parameters
+
+The `execute_graph_generation` function takes several parameters to configure the generation of the knowledge graph. Here are the details of each parameter:
+
+- **text** (`str`): The input text from which the knowledge graph is to be generated. This should be a string containing the textual content or code snippet you want to analyze.
+
+- **language_model** (`ChatOllama` or other compatible model instances): The language model used to process the input text. This model should be capable of understanding and analyzing the structure of the provided text.
+
+- **embedding_model** (`HuggingFaceEmbeddings` instance): This model is used to create embeddings for the text, which are then used to facilitate the retrieval of related text segments and to enhance the context understanding of the language model.
+
+- **relations** (`dict`): A dictionary defining the possible relations between nodes in the generated knowledge graph. Each key-value pair in the dictionary specifies a relation type and its associated properties or rules.
+
+- **max_attempts** (`int`): The maximum number of iterative attempts the function will make to generate the knowledge graph before stopping. This parameter helps control the execution time and resources.
+
+- **process_chunk_size** (`int`): The size of the text chunks that the text is split into for processing. Smaller chunks might lead to more detailed analysis at the cost of potentially higher computational overhead.
+
+- **embedding_chunk_size** (`int`): Specifies the size of text chunks used specifically for generating embeddings. This size can impact the granularity of embeddings and thus the detail of the retrieved context.
+
+These parameters allow you to finely tune the knowledge graph generation process to meet specific needs or constraints of your application.
+
 ## Features
 
 - Supports multiple language models including remote API and local executions.
