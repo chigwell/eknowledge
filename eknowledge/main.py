@@ -15,13 +15,14 @@ from .prompts import prompts
 CACHE_FILE = ".cache"
 
 
-def initialize_text_chain(text, parser, language_model, prompt_template, embedding_model=HuggingFaceEmbeddings()):
+def initialize_text_chain(text, parser, language_model, prompt_template, embedding_model=HuggingFaceEmbeddings(),
+                          embedding_chunk_size=500):
     """Initialize the text processing chain with caching and text splitting."""
     manage_cache_file(create=True, content=text)
 
     loader = TextLoader(CACHE_FILE)
     documents = loader.load()
-    splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=0)
+    splitter = CharacterTextSplitter(chunk_size=embedding_chunk_size, chunk_overlap=0)
     texts = splitter.split_documents(documents)
 
     embedding = embedding_model
@@ -64,9 +65,9 @@ def split_text_into_chunks(text, chunk_size=50):
     return [' '.join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
 
 
-def process_text_chunks(chain, text, result_graph, relations):
+def process_text_chunks(chain, text, result_graph, relations, process_chunk_size):
     """Process individual text chunks to generate nodes."""
-    chunks = split_text_into_chunks(text)
+    chunks = split_text_into_chunks(text, process_chunk_size)
     for chunk in chunks:
         try:
             result = chain.invoke(
@@ -119,13 +120,13 @@ def prepare_parser_and_prompt(model):
 
 
 def execute_graph_generation(text, language_model, embedding_model=HuggingFaceEmbeddings(), relations=RELATIONS,
-                             max_attempts=10):
+                             max_attempts=10, process_chunk_size=50, embedding_chunk_size=500):
     """Generate the result graph through iterative node generation and condition checks."""
     RelationsModel = define_relation_model(relations)
     TaskCompletionModel = define_task_completion_model()
 
     parser, prompt_template = prepare_parser_and_prompt(RelationsModel)
-    initial_chain = initialize_text_chain(text, parser, language_model, prompt_template, embedding_model)
+    initial_chain = initialize_text_chain(text, parser, language_model, prompt_template, embedding_model, embedding_chunk_size)
 
     result_graph = []
     finished = False
@@ -133,11 +134,11 @@ def execute_graph_generation(text, language_model, embedding_model=HuggingFaceEm
 
     while not finished:
         attempts += 1
-        result_graph = process_text_chunks(initial_chain, text, result_graph, relations)
+        result_graph = process_text_chunks(initial_chain, text, result_graph, relations, process_chunk_size)
         graph_as_string = str(result_graph)
         parser, prompt_template = prepare_parser_and_prompt(TaskCompletionModel)
         completion_chain = initialize_text_chain(graph_as_string, parser, language_model, prompt_template,
-                                                 embedding_model)
+                                                 embedding_model, embedding_chunk_size)
         finished = check_termination_condition(text, result_graph, completion_chain, attempts, max_attempts)
 
     manage_cache_file()
