@@ -1,145 +1,162 @@
-import os
-from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_text_splitters import CharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.pydantic_v1 import BaseModel, Field
-from typing import List
-from langchain_community.document_loaders import TextLoader
+import re
+import time
 from .relations import RELATIONS
-from .prompts import prompts
+from .prompts import SYSTEM_PROMPT, USER_PROMPT
+from langchain_core.messages import HumanMessage, SystemMessage
 
 
-CACHE_FILE = ".cache"
+def split_text_by_words(text: str, chunk_size: int) -> list[str]:
+    """
+    Splits a text into chunks, where each chunk has a maximum number of words.
 
+    This function splits the text by whitespace to identify words and then
+    groups these words into chunks, ensuring no chunk exceeds the specified
+    word count.
 
-def initialize_text_chain(text, parser, language_model, prompt_template, embedding_model=HuggingFaceEmbeddings(),
-                          embedding_chunk_size=500):
-    """Initialize the text processing chain with caching and text splitting."""
-    manage_cache_file(create=True, content=text)
+    Args:
+        text: The input string to split.
+        chunk_size: The maximum number of words allowed in each chunk. Must be
+                    a positive integer.
 
-    loader = TextLoader(CACHE_FILE)
-    documents = loader.load()
-    splitter = CharacterTextSplitter(chunk_size=embedding_chunk_size, chunk_overlap=0)
-    texts = splitter.split_documents(documents)
+    Returns:
+        A list of strings, where each string is a chunk of the original text.
+        Returns an empty list if the input text is empty or contains only
+        whitespace.
 
-    embedding = embedding_model
-    vector_store = FAISS.from_documents(texts, embedding)
-    retriever = vector_store.as_retriever()
+    Raises:
+        ValueError: If chunk_size is not a positive integer.
+        TypeError: If the input 'text' is not a string.
+    """
+    # --- Input Validation ---
+    if not isinstance(text, str):
+        raise TypeError("Input 'text' must be a string.")
+    if not isinstance(chunk_size, int) or chunk_size <= 0:
+        raise ValueError("chunk_size must be a positive integer.")
 
-    return ({"context": retriever, "query": RunnablePassthrough()} | prompt_template | language_model | parser)
-
-
-def manage_cache_file(create=False, content=None):
-    """Handle cache file creation and removal."""
-    if create:
-        if os.path.exists(CACHE_FILE):
-            os.remove(CACHE_FILE)
-        with open(CACHE_FILE, 'w') as file:
-            file.write(content if content else "")
-
-
-def check_termination_condition(input_text, result_graph, processing_chain, attempt_count, max_attempts):
-    """Check if the processing should terminate based on conditions."""
-    if attempt_count >= max_attempts:
-        return True
-
-    graph_as_string = str(result_graph)
-    result = processing_chain.invoke(
-        prompts['check_end_condition']['question'] + prompts['check_end_condition']['additional'] + graph_as_string
-    )
-
-    try:
-        if result.completion == "done":
-            return True
-    except Exception:
-        return False
-    return False
-
-
-def split_text_into_chunks(text, chunk_size=50):
-    """Split text into manageable chunks."""
+    # --- Word Splitting ---
+    # Use split() which handles various whitespace characters (spaces, tabs, newlines)
+    # and ignores empty strings resulting from multiple spaces.
     words = text.split()
-    return [' '.join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
+
+    # Handle case where text is empty or only whitespace
+    if not words:
+        return []
+
+    # --- Chunking ---
+    chunks = []
+    current_chunk_word_count = 0
+    start_index = 0
+
+    # Iterate through the word list using range and step
+    for i in range(0, len(words), chunk_size):
+        # Determine the slice of words for this chunk
+        word_slice = words[i : i + chunk_size]
+
+        # Join the words in the slice back into a string with single spaces
+        chunk_string = " ".join(word_slice)
+
+        # Add the resulting chunk string to the list
+        chunks.append(chunk_string)
+
+    return chunks
 
 
-def process_text_chunks(chain, text, result_graph, relations, process_chunk_size):
-    """Process individual text chunks to generate nodes."""
-    chunks = split_text_into_chunks(text, process_chunk_size)
-    for chunk in chunks:
-        try:
-            result = chain.invoke(
-                prompts['generate_nodes']['question'] + chunk + prompts['generate_nodes']['additional'] + str(relations)
-            )
-            for item in result.relations:
-                result_graph.append({
-                    "from_node": item.from_node,
-                    "relation": item.relation,
-                    "to_node": item.to_node
-                })
-        except Exception:
-            continue
-    return result_graph
+def execute_graph_generation(
+        text="",
+        llm=None,
+        chunk_size=100,
+        relations=RELATIONS,
+        max_retries=10,
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=USER_PROMPT,
+        verbose=False,
+        sleep_time=0.75,
+):
+    if llm is None:
+        raise ValueError("LLM object must be provided.")
+
+    chunks = split_text_by_words(text, chunk_size)
+    if verbose:
+        print(f"Splitting text into {len(chunks)} chunks of size {chunk_size} words.")
+
+    graph = []
+    total_chunks = len(chunks)
+    for count_chunk, chunk in enumerate(chunks, 1):
+        if verbose:
+            print(f"Processing chunk {count_chunk}/{total_chunks}...")
+
+        found_valid_node_in_chunk = False
+        retry_count = 0
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt.format(text=chunk, relationships=relations))
+        ]
+
+        # Loop until a valid node is found OR retries are exhausted for this chunk
+        while not found_valid_node_in_chunk and retry_count < max_retries:
+            try:
+                response = llm.invoke(messages)
+                # Ensure response and content are usable
+                content = response.content if response and hasattr(response, 'content') else ""
+
+                if not isinstance(content, str):
+                    if verbose:
+                        print(
+                            f"LLM response content is not a string (type: {type(content)}) for chunk {count_chunk}. Retrying (attempt {retry_count + 1}/{max_retries})...")
+                    retry_count += 1
+                    continue  # Retry if content isn't a string
+
+                nodes_raw = re.findall(r"<node>(.*?)</node>", content, re.DOTALL)
+
+                if not nodes_raw:
+                    # If LLM responds but without any <node> tags
+                    if verbose:
+                        print(
+                            f"No <node> tags found in response for chunk {count_chunk}. Retrying (attempt {retry_count + 1}/{max_retries})...")
+                    # No need to raise error here, just retry
+                    retry_count += 1
+                    continue  # Retry
+
+                # --- Process found <node> tags ---
+                processed_at_least_one_node = False
+                for node_content in nodes_raw:
+                    from_node_match = re.search(r"<from_node>(.*?)</from_node>", node_content)
+                    relationship_match = re.search(r"<relationship>(.*?)</relationship>", node_content)
+                    to_node_match = re.search(r"<to_node>(.*?)</to_node>", node_content)
+
+                    if from_node_match and relationship_match and to_node_match:
+                        graph.append({
+                            "from": from_node_match.group(1).strip(),
+                            "relationship": relationship_match.group(1).strip(),
+                            "to": to_node_match.group(1).strip()
+                        })
+                        processed_at_least_one_node = True  # Mark that we found a valid one
+
+                # --- Decide whether to exit the while loop ---
+                if processed_at_least_one_node:
+                    if verbose:
+                        print(f"Nodes successfully processed in chunk {count_chunk}/{total_chunks}.")
+                    found_valid_node_in_chunk = True  # Exit the while loop for this chunk
+                else:
+                    # Found <node> tags, but none had the correct inner structure
+                    if verbose:
+                        print(
+                            f"<node> tags found but no valid structure in chunk {count_chunk}. Retrying (attempt {retry_count + 1}/{max_retries})...")
+                    retry_count += 1
+                    # Loop continues (while condition checked again)
+
+            except Exception as e:
+                # Catch LLM errors or unexpected processing errors (like regex on bad types if check failed)
+                if verbose:
+                    print(
+                        f"Error during LLM invocation or processing for chunk {count_chunk}: {e}. Retrying (attempt {retry_count + 1}/{max_retries})...")
+                retry_count += 1
+                time.sleep(sleep_time)
+                continue  # Retry
+            time.sleep(sleep_time)
+        if not found_valid_node_in_chunk and verbose:
+            print(f"Max retries ({max_retries}) reached for chunk {count_chunk}. No valid nodes added for this chunk.")
+
+    return graph
 
 
-def define_relation_model(relations):
-    """Define Pydantic models for relations."""
-
-    class RelationModel(BaseModel):
-        from_node: str = Field(..., description="Source node of the relation.")
-        to_node: str = Field(..., description="Target node of the relation.")
-        relation: str = Field(..., description="Type of relation.")
-
-    class RelationsModel(BaseModel):
-        relations: List[RelationModel]
-
-    return RelationsModel
-
-
-def define_task_completion_model():
-    """Define Pydantic model for task completion."""
-
-    class TaskCompletionModel(BaseModel):
-        completion: str = Field(..., description="Completion status of the task.")
-
-    return TaskCompletionModel
-
-
-def prepare_parser_and_prompt(model):
-    """Prepare parser and prompt template for structured outputs."""
-    parser = PydanticOutputParser(pydantic_object=model)
-    prompt_template = ChatPromptTemplate.from_messages([
-        ("system",
-         "Answer the user query. Wrap the output in `json` tags\n{format_instructions}. The context is {context}"),
-        ("human", "{query}"),
-    ]).partial(format_instructions=parser.get_format_instructions())
-
-    return parser, prompt_template
-
-
-def execute_graph_generation(text, language_model, embedding_model=HuggingFaceEmbeddings(), relations=RELATIONS,
-                             max_attempts=10, process_chunk_size=50, embedding_chunk_size=500):
-    """Generate the result graph through iterative node generation and condition checks."""
-    RelationsModel = define_relation_model(relations)
-    TaskCompletionModel = define_task_completion_model()
-
-    parser, prompt_template = prepare_parser_and_prompt(RelationsModel)
-    initial_chain = initialize_text_chain(text, parser, language_model, prompt_template, embedding_model, embedding_chunk_size)
-
-    result_graph = []
-    finished = False
-    attempts = 0
-
-    while not finished:
-        attempts += 1
-        result_graph = process_text_chunks(initial_chain, text, result_graph, relations, process_chunk_size)
-        graph_as_string = str(result_graph)
-        parser, prompt_template = prepare_parser_and_prompt(TaskCompletionModel)
-        completion_chain = initialize_text_chain(graph_as_string, parser, language_model, prompt_template,
-                                                 embedding_model, embedding_chunk_size)
-        finished = check_termination_condition(text, result_graph, completion_chain, attempts, max_attempts)
-
-    manage_cache_file()
-    return result_graph
