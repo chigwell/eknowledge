@@ -12,7 +12,7 @@
 Install `eknowledge` using pip:
 
 ```bash
-pip install eknowledge
+pip install eknowledge langchain_llm7
 ```
 
 ## Usage
@@ -21,20 +21,13 @@ Here's a simple example to get you started with `eknowledge`. This example demon
 
 ### Example
 
-First, import the `execute_graph_generation` function from the `eknowledge` package:
-
 ```python
 from eknowledge import execute_graph_generation
-```
-
-You will also need a language model from the `langchain_ollama` package. Here's how to set it up and use it with `eknowledge`:
-
-```python
-from langchain_ollama import ChatOllama
+from langchain_llm7 import ChatLLM7
 
 # Initialize the language model
-MODEL = "llama3.1:8b"
-llm = ChatOllama(model=MODEL, max_tokens=1500)
+MODEL = "deepseek-r1"
+llm = ChatLLM7(model=MODEL)
 
 # Define your input text
 input_text = "The quick brown fox jumps over the lazy dog."
@@ -49,13 +42,17 @@ graph = execute_graph_generation(
 
 # Output the graph
 print(graph)
+# > Splitting text into 1 chunks of size 100 words.
+# > Processing chunk 1/1...
+# > Nodes successfully processed in chunk 1/1.
+# > [{'from': 'quick brown fox', 'relationship': 'interacts_with', 'to': 'lazy dog'}]
 ```
 
 This script will output a knowledge graph based on the relationships identified in the text.
 
 ## Contributing
 
-Contributions are welcome! Please read the contributing guide to learn how you can propose bug fixes, improvements, or open issues.
+Contributions are welcome! Please open issues or submit pull requests for any bugs, features, or improvements you would like to see.
 
 ## License
 
